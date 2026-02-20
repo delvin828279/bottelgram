@@ -15,7 +15,8 @@
 const TELEGRAM_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY")!;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
-const GEMINI_API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+const GEMINI_API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+
 // تاریخچه مکالمه هر کاربر
 const conversationHistory = new Map<number, Array<{ role: string; parts: Array<{ text: string }> }>>();
 const MAX_HISTORY = 20;
@@ -44,6 +45,54 @@ async function sendMessage(chatId: number, text: string, replyToMessageId?: numb
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text: text }),
     });
+  }
+}
+
+// تقسیم و ارسال پیام‌های بلند (بیشتر از 4096 کاراکتر)
+async function sendLongMessage(chatId: number, text: string, replyToMessageId?: number) {
+  const MAX_LENGTH = 4000; // کمی کمتر از ۴۰۹۶ برای اطمینان
+
+  if (text.length <= MAX_LENGTH) {
+    await sendMessage(chatId, text, replyToMessageId);
+    return;
+  }
+
+  // تقسیم هوشمند: سعی می‌کنه روی خط جدید یا جمله تقسیم کنه
+  const parts: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= MAX_LENGTH) {
+      parts.push(remaining);
+      break;
+    }
+
+    let cutIndex = MAX_LENGTH;
+
+    // سعی کن روی خط جدید برش بده
+    const lastNewline = remaining.lastIndexOf("\n", MAX_LENGTH);
+    if (lastNewline > MAX_LENGTH * 0.5) {
+      cutIndex = lastNewline + 1;
+    } else {
+      // سعی کن روی فاصله برش بده
+      const lastSpace = remaining.lastIndexOf(" ", MAX_LENGTH);
+      if (lastSpace > MAX_LENGTH * 0.5) {
+        cutIndex = lastSpace + 1;
+      }
+    }
+
+    parts.push(remaining.slice(0, cutIndex));
+    remaining = remaining.slice(cutIndex);
+  }
+
+  // ارسال هر قسمت با تاخیر کم
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const label = parts.length > 1 ? `_(${i + 1}/${parts.length})_\n\n` : "";
+    await sendMessage(chatId, label + part, i === 0 ? replyToMessageId : undefined);
+    if (i < parts.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 500)); // نیم ثانیه تاخیر
+    }
   }
 }
 
@@ -87,7 +136,7 @@ async function askGemini(chatId: number, userMessage: string, userName: string):
         },
         contents: history,
         generationConfig: {
-          maxOutputTokens: 1024,
+          maxOutputTokens: 8192,
           temperature: 0.9,
         },
       }),
@@ -164,7 +213,7 @@ async function handleUpdate(update: Record<string, unknown>) {
   const aiResponse = await askGemini(chatId, text, userName);
 
   // ارسال پاسخ به کاربر
-  await sendMessage(chatId, aiResponse, messageId);
+  await sendLongMessage(chatId, aiResponse, messageId);
 }
 
 // سرور اصلی
